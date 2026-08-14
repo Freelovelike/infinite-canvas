@@ -199,6 +199,19 @@ export type CanvasPluginAi = {
     defaultModel: (capability: ModelCapability) => string;
 };
 
+export type CanvasStoredImage = {
+    url: string;
+    storageKey: string;
+    width: number;
+    height: number;
+    bytes: number;
+    mimeType: string;
+};
+
+export type CanvasPluginAssets = {
+    saveImage: (input: string | Blob) => Promise<CanvasStoredImage>;
+};
+
 // ---------------------------------------------------------------------------
 // 节点上下文:每个节点渲染时注入,是插件与画布交互的核心接口
 // ---------------------------------------------------------------------------
@@ -214,6 +227,7 @@ export type CanvasNodeContext = {
     node: CanvasNodeData;
     theme: CanvasTheme;
     scale: number;
+    baseUrl: string; // Vite 部署基路径，插件静态子应用应基于它解析 URL
     isSelected: boolean; // 该节点当前是否被选中(用于按需启用 iframe 交互等)
     updateMetadata: (patch: CanvasNodeMetadata) => void;
     updateNode: (patch: Partial<Pick<CanvasNodeData, "title" | "width" | "height">>) => void;
@@ -230,6 +244,8 @@ export type CanvasNodeContext = {
     on: (event: string, handler: (payload: unknown) => void) => () => void;
     // AI 生成能力(生图/生视频/生文本),复用宿主模型配置
     ai: CanvasPluginAi;
+    // 保存为宿主标准图片资源，可安全写入普通图片节点并在刷新后恢复。
+    assets: CanvasPluginAssets;
     // 打开/关闭本节点下方的自定义 Panel(需在节点定义里提供 Panel)
     openPanel: () => void;
     closePanel: () => void;

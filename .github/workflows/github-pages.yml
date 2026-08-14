@@ -26,6 +26,10 @@ jobs:
         working-directory: web
         run: bun install
 
+      - name: Install director desk dependencies
+        working-directory: director-desk
+        run: bun install
+
       - name: Build
         working-directory: web
         env:

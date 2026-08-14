@@ -1,13 +1,18 @@
 # 构建 Vite 前端产物。
 FROM oven/bun:1.3.13 AS web-build
 
+WORKDIR /app/director-desk
+COPY director-desk/package.json director-desk/package-lock.json ./
+RUN --mount=type=cache,target=/root/.bun/install/cache bun install --cache-dir=/root/.bun/install/cache
+COPY director-desk ./
+
 WORKDIR /app/web
 COPY web/package.json web/bun.lock ./
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install --cache-dir=/root/.bun/install/cache
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY web ./
-RUN bun run build
+RUN bun --cwd /app/director-desk run build:canvas && bun run build:web
 
 # 运行镜像：只启动静态前端，AI 请求由浏览器前台直连用户自己的接口。
 FROM nginx:1.27-alpine
