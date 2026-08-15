@@ -4,7 +4,7 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "dev": "vite --host 0.0.0.0 --port 3000",
+        "dev": "vite --host 0.0.0.0 --port 3066",
         "build": "npm run build:director && npm run build:web",
         "build:director": "npm --prefix ../director-desk run build:canvas",
         "build:web": "vite build",
