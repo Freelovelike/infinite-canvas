@@ -47,12 +47,13 @@ function aiHeaders(config: AiConfig, contentType?: string) {
 export async function requestVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationResult> {
     const task = await createVideoGenerationTask(config, prompt, references, videoReferences, audioReferences, options);
     const delayMs = task.provider === "seedance" ? 5000 : 2500;
-    for (let attempt = 0; attempt < 120; attempt += 1) {
+    const attempts = task.provider === "seedance" ? 120 : 360;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
         if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const state = await pollVideoGenerationTask(config, task, options);
         if (state.status === "completed") return state.result;
         if (state.status === "failed") throw new Error(state.error);
-        if (attempt === 119) throw new Error(apiText("videoTimeout", { provider: task.provider === "seedance" ? "Seedance " : "" }));
+        if (attempt === attempts - 1) throw new Error(apiText("videoTimeout", { provider: task.provider === "seedance" ? "Seedance " : "" }));
         await delay(delayMs, options?.signal);
     }
     throw new Error(apiText("videoTimeout", { provider: "" }));
@@ -142,8 +143,15 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
     if (normalizeVideoSize(config.size)) body.append("size", normalizeVideoSize(config.size)!);
     body.append("resolution_name", normalizeVideoResolution(config.vquality));
     body.append("preset", "normal");
-    const files = await Promise.all(references.slice(0, 7).map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
-    files.forEach((file) => body.append("input_reference[]", file));
+    const files: File[] = [];
+    for (const image of references.slice(0, 7)) {
+        const dataUrl = await imageToDataUrl(image);
+        if (!dataUrl?.startsWith("data:")) continue;
+        const file = dataUrlToFile({ ...image, dataUrl });
+        if (file.size > 0) files.push(file);
+    }
+    if (references.length && !files.length) throw new Error(apiText("referenceImageReadFailed"));
+    files.forEach((file) => body.append("input_reference", file));
     try {
         const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config), signal: options?.signal })).data);
         if (!created.id) throw new Error(apiText("noVideoTaskId"));
@@ -334,7 +342,13 @@ function unwrapEnvelope<T>(payload: ApiEnvelope<T>, emptyMessage: string): T {
 }
 
 function videoResultUrl(payload: VideoResponse | SeedanceTask) {
-    return [payload.video_url, payload.result_url, payload.url, payload.content?.video_url, payload.content?.url].find((url) => typeof url === "string" && (isPublicMediaUrl(url) || /\.mp4(\?|#|$)/i.test(url)));
+    const extraVideos = Array.isArray((payload as { videos?: unknown }).videos)
+        ? ((payload as { videos?: unknown[] }).videos || []).filter((url): url is string => typeof url === "string")
+        : [];
+    const candidates = [payload.url, payload.video_url, payload.result_url, payload.content?.video_url, payload.content?.url, ...extraVideos];
+    const local = candidates.find((url) => typeof url === "string" && /\/videos\/[^/]+\/content(?:\?|$)/.test(url));
+    if (local) return local;
+    return candidates.find((url) => typeof url === "string" && (isPublicMediaUrl(url) || /\.mp4(\?|#|$)/i.test(url)));
 }
 
 function readApiErrorMessage(value: unknown): string {

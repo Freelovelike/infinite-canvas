@@ -85,20 +85,26 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
 
     nextPrompt += prompt.slice(lastIndex);
     if (textBlocks.length) nextPrompt = `${nextPrompt.trim()}\n\n${textBlocks.join("\n\n")}`;
-    const referenceImages = selectedInputs.map((input) => input.image).filter((image): image is ReferenceImage => Boolean(image));
-    const referenceVideos = selectedInputs.map((input) => input.video).filter((video): video is ReferenceVideo => Boolean(video));
-    const referenceAudios = selectedInputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
+    const mentionedImages = selectedInputs.map((input) => input.image).filter((image): image is ReferenceImage => Boolean(image));
+    const connectedImages = inputs.map((input) => input.image).filter((image): image is ReferenceImage => Boolean(image));
+    const referenceImages = uniqueReferences([...mentionedImages, ...connectedImages]);
+    const mentionedVideos = selectedInputs.map((input) => input.video).filter((video): video is ReferenceVideo => Boolean(video));
+    const connectedVideos = inputs.map((input) => input.video).filter((video): video is ReferenceVideo => Boolean(video));
+    const referenceVideos = uniqueReferences([...mentionedVideos, ...connectedVideos]);
+    const mentionedAudios = selectedInputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
+    const connectedAudios = inputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
+    const referenceAudios = uniqueReferences([...mentionedAudios, ...connectedAudios]);
 
     if (!hasToken) {
         return {
             prompt,
-            referenceImages: [],
-            referenceVideos: [],
-            referenceAudios: [],
-            textCount: 0,
-            imageCount: 0,
-            videoCount: 0,
-            audioCount: 0,
+            referenceImages: connectedImages,
+            referenceVideos: connectedVideos,
+            referenceAudios: connectedAudios,
+            textCount: inputs.filter((input) => input.type === "text").length,
+            imageCount: connectedImages.length,
+            videoCount: connectedVideos.length,
+            audioCount: connectedAudios.length,
         };
     }
 
@@ -143,12 +149,29 @@ export function buildNodeResponseMessages(context: NodeGenerationContext): AiTex
 
 export async function hydrateNodeGenerationContext(context: NodeGenerationContext) {
     const { imageToDataUrl } = await import("@/services/image-storage");
-    return { ...context, referenceImages: await Promise.all(context.referenceImages.map(async (image) => ({ ...image, dataUrl: await imageToDataUrl(image) }))) };
+    const referenceImages = [];
+    for (const image of context.referenceImages) {
+        const dataUrl = await imageToDataUrl(image);
+        if (!dataUrl?.startsWith("data:image/")) {
+            throw new Error(i18n.t("apiErrors.referenceImageReadFailed"));
+        }
+        referenceImages.push({ ...image, dataUrl });
+    }
+    return { ...context, referenceImages };
 }
 
 function readNodeTextInput(node: CanvasNodeData) {
     if (node.type === CanvasNodeType.Text) return node.metadata?.content || node.metadata?.prompt || "";
     return node.metadata?.prompt || "";
+}
+
+function uniqueReferences<T extends { id: string }>(items: T[]) {
+    const seen = new Set<string>();
+    return items.filter((item) => {
+        if (seen.has(item.id)) return false;
+        seen.add(item.id);
+        return true;
+    });
 }
 
 function generationLabel(type: NodeGenerationInput["type"], index: number) {
@@ -159,7 +182,8 @@ function generationLabel(type: NodeGenerationInput["type"], index: number) {
 }
 
 function readReferenceImage(node: CanvasNodeData): ReferenceImage | null {
-    if (node.type !== CanvasNodeType.Image || !node.metadata?.content) return null;
+    if (node.type !== CanvasNodeType.Image) return null;
+    if (!node.metadata?.content && !node.metadata?.storageKey) return null;
     return {
         id: node.id,
         name: `${node.title || node.id}.png`,
