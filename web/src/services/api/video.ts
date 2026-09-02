@@ -25,6 +25,7 @@ type SeedanceTask = {
 type ApiEnvelope<T> = T | { code?: number | string; data?: T | null; msg?: string; message?: string; error?: { message?: string } };
 type RequestOptions = { signal?: AbortSignal; onTaskCreated?: (task: VideoGenerationTask) => void };
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
+const OPENAI_VIDEO_REFERENCE_LIMIT = 9;
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
 export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "plugin"; model: string };
@@ -155,10 +156,10 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
     body.append("resolution_name", normalizeVideoResolution(config.vquality));
     body.append("preset", "normal");
     const files: File[] = [];
-    for (const [index, video] of videoReferences.slice(0, 7).entries()) {
+    for (const [index, video] of videoReferences.slice(0, OPENAI_VIDEO_REFERENCE_LIMIT).entries()) {
         files.push(await referenceVideoToFile(video, index));
     }
-    for (const image of references.slice(0, Math.max(0, 7 - files.length))) {
+    for (const image of references.slice(0, Math.max(0, OPENAI_VIDEO_REFERENCE_LIMIT - files.length))) {
         const dataUrl = await imageToDataUrl(image);
         if (!dataUrl?.startsWith("data:")) continue;
         const file = dataUrlToFile({ ...image, dataUrl });
