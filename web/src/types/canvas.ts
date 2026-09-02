@@ -56,6 +56,9 @@ export type CanvasNodeMetadata = {
     vquality?: string;
     generateAudio?: string;
     watermark?: string;
+    videoTaskId?: string;
+    videoTaskProvider?: "openai" | "seedance";
+    videoTaskModel?: string;
     audioVoice?: string;
     audioFormat?: string;
     audioSpeed?: string;

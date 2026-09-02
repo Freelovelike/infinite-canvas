@@ -23,7 +23,7 @@ type SeedanceTask = {
     video_url?: string;
 };
 type ApiEnvelope<T> = T | { code?: number | string; data?: T | null; msg?: string; message?: string; error?: { message?: string } };
-type RequestOptions = { signal?: AbortSignal };
+type RequestOptions = { signal?: AbortSignal; onTaskCreated?: (task: VideoGenerationTask) => void };
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
@@ -46,6 +46,11 @@ function aiHeaders(config: AiConfig, contentType?: string) {
 
 export async function requestVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationResult> {
     const task = await createVideoGenerationTask(config, prompt, references, videoReferences, audioReferences, options);
+    options?.onTaskCreated?.(task);
+    return waitForVideoGenerationTask(config, task, options);
+}
+
+export async function waitForVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationResult> {
     const delayMs = task.provider === "seedance" ? 5000 : 2500;
     const attempts = task.provider === "seedance" ? 120 : Infinity;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -68,10 +73,8 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     if (isSeedanceVideoConfig(requestConfig)) {
         return createSeedanceTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     }
-    if (videoReferences.length || audioReferences.length) {
-        throw new Error(apiText("videoReferencesUnsupported"));
-    }
-    return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, options);
+    if (audioReferences.length) throw new Error(apiText("audioReferencesUnsupported"));
+    return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, videoReferences, options);
 }
 
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
@@ -131,7 +134,8 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
     if (result.blob) return uploadMediaFile(result.blob, "video");
     if (result.url) {
         if (isLocalVideoContentUrl(result.url)) {
-            return { url: result.url, storageKey: "", bytes: 0, mimeType: result.mimeType || "video/mp4", width: 1280, height: 720 };
+            const size = await readVideoSize(result.url);
+            return { url: result.url, storageKey: "", bytes: 0, mimeType: result.mimeType || "video/mp4", ...size };
         }
         try {
             return await uploadMediaFile(result.url, "video");
@@ -142,7 +146,7 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
     throw new Error(apiText("noPlayableVideo"));
 }
 
-async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<VideoGenerationTask> {
+async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], options?: RequestOptions): Promise<VideoGenerationTask> {
     const body = new FormData();
     body.append("model", modelOptionName(model));
     body.append("prompt", prompt);
@@ -151,7 +155,10 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
     body.append("resolution_name", normalizeVideoResolution(config.vquality));
     body.append("preset", "normal");
     const files: File[] = [];
-    for (const image of references.slice(0, 7)) {
+    for (const [index, video] of videoReferences.slice(0, 7).entries()) {
+        files.push(await referenceVideoToFile(video, index));
+    }
+    for (const image of references.slice(0, Math.max(0, 7 - files.length))) {
         const dataUrl = await imageToDataUrl(image);
         if (!dataUrl?.startsWith("data:")) continue;
         const file = dataUrlToFile({ ...image, dataUrl });
@@ -182,8 +189,39 @@ async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, 
         if (video.status === "failed" || video.status === "cancelled") return { status: "failed", error: readApiErrorMessage(video.error?.message) || apiText("videoGenerationFailed") };
         return { status: "pending" };
     } catch (error) {
+        if (isTransientAxiosError(error)) return { status: "pending" };
         throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
     }
+}
+
+function readVideoSize(url: string) {
+    return new Promise<{ width: number; height: number; durationMs?: number }>((resolve) => {
+        const video = document.createElement("video");
+        const done = () => resolve({ width: video.videoWidth || 1280, height: video.videoHeight || 720, durationMs: Number.isFinite(video.duration) ? Math.round(video.duration * 1000) : undefined });
+        video.onloadedmetadata = done;
+        video.onerror = done;
+        video.preload = "metadata";
+        video.src = url;
+    });
+}
+
+async function referenceVideoToFile(video: ReferenceVideo, index: number) {
+    let blob = video.storageKey ? await getMediaBlob(video.storageKey) : null;
+    if (!blob && video.url) {
+        try {
+            blob = await (await fetch(video.url)).blob();
+        } catch {
+            blob = null;
+        }
+    }
+    if (!blob?.size) throw new Error(apiText("invalidReferenceVideo"));
+    return new File([blob], video.name || `reference-video-${index + 1}.mp4`, { type: video.type || blob.type || "video/mp4" });
+}
+
+function isTransientAxiosError(error: unknown) {
+    if (!axios.isAxiosError(error)) return false;
+    const status = error.response?.status;
+    return !status || status === 408 || status === 429 || status >= 500;
 }
 
 async function createSeedanceTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
